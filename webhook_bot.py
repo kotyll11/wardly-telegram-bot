@@ -50,12 +50,87 @@ def edit_message(chat_id: str, message_id: int, new_text: str):
         'message_id': message_id,
         'text': new_text
     }
-    
+
     try:
         response = requests.post(url, json=data)
         return response.json()
     except Exception as e:
         logger.error(f"خطأ في تعديل الرسالة: {e}")
+        return None
+
+def edit_message_with_edit_button(chat_id: str, message_id: int, new_text: str, transaction_id: str):
+    """تعديل رسالة مع إضافة زر تعديل الحالة"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+
+    # إنشاء لوحة مفاتيح مع زر تعديل الحالة
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "🔄 تعديل الحالة",
+                    "callback_data": f"edit_status_{transaction_id}"
+                }
+            ]
+        ]
+    }
+
+    data = {
+        'chat_id': chat_id,
+        'message_id': message_id,
+        'text': new_text,
+        'reply_markup': keyboard
+    }
+
+    try:
+        response = requests.post(url, json=data)
+        return response.json()
+    except Exception as e:
+        logger.error(f"خطأ في تعديل الرسالة مع الزر: {e}")
+        return None
+
+def send_status_options(chat_id: str, transaction_id: str, original_message_id: int):
+    """إرسال خيارات تعديل الحالة"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+    message_text = f"🔄 تعديل حالة المعاملة #{transaction_id}\n\nاختر الحالة الجديدة:"
+
+    # إنشاء لوحة مفاتيح مع خيارات الحالة
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "✅ تم",
+                    "callback_data": f"set_status_{transaction_id}_تم"
+                },
+                {
+                    "text": "❌ مرفوض",
+                    "callback_data": f"set_status_{transaction_id}_مرفوض"
+                }
+            ],
+            [
+                {
+                    "text": "⏳ جاري",
+                    "callback_data": f"set_status_{transaction_id}_جاري"
+                },
+                {
+                    "text": "⏸️ معلق",
+                    "callback_data": f"set_status_{transaction_id}_معلق"
+                }
+            ]
+        ]
+    }
+
+    data = {
+        'chat_id': chat_id,
+        'text': message_text,
+        'reply_markup': keyboard
+    }
+
+    try:
+        response = requests.post(url, json=data)
+        return response.json()
+    except Exception as e:
+        logger.error(f"خطأ في إرسال خيارات الحالة: {e}")
         return None
 
 def answer_callback_query(callback_query_id: str, text: str = ""):
@@ -113,31 +188,56 @@ def handle_callback_query(callback_query):
         chat_id = str(message['chat']['id'])
         message_id = message['message_id']
         callback_query_id = callback_query['id']
-        
+
         if callback_data.startswith('approve_transaction_'):
             transaction_id = callback_data.replace('approve_transaction_', '')
             success = update_transaction_status(transaction_id, 'تم')
-            
+
             if success:
                 new_text = message['text'] + "\n\n✅ تم قبول المعاملة"
-                edit_message(chat_id, message_id, new_text)
+                # إضافة زر تعديل الحالة
+                edit_message_with_edit_button(chat_id, message_id, new_text, transaction_id)
                 answer_callback_query(callback_query_id, "تم قبول المعاملة بنجاح ✅")
                 logger.info(f"✅ تم قبول المعاملة {transaction_id}")
             else:
                 answer_callback_query(callback_query_id, "فشل في تحديث المعاملة ❌")
-                
+
         elif callback_data.startswith('reject_transaction_'):
             transaction_id = callback_data.replace('reject_transaction_', '')
             success = update_transaction_status(transaction_id, 'مرفوض')
-            
+
             if success:
                 new_text = message['text'] + "\n\n❌ تم رفض المعاملة"
-                edit_message(chat_id, message_id, new_text)
+                # إضافة زر تعديل الحالة
+                edit_message_with_edit_button(chat_id, message_id, new_text, transaction_id)
                 answer_callback_query(callback_query_id, "تم رفض المعاملة ❌")
                 logger.info(f"❌ تم رفض المعاملة {transaction_id}")
             else:
                 answer_callback_query(callback_query_id, "فشل في تحديث المعاملة ❌")
-        
+
+        elif callback_data.startswith('edit_status_'):
+            transaction_id = callback_data.replace('edit_status_', '')
+            # إرسال قائمة خيارات تعديل الحالة
+            send_status_options(chat_id, transaction_id, message_id)
+            answer_callback_query(callback_query_id, "اختر الحالة الجديدة")
+
+        elif callback_data.startswith('set_status_'):
+            # تنسيق: set_status_TRANSACTION_ID_STATUS
+            parts = callback_data.replace('set_status_', '').split('_', 1)
+            if len(parts) == 2:
+                transaction_id, new_status = parts
+                success = update_transaction_status(transaction_id, new_status)
+
+                if success:
+                    # تحديث الرسالة الأصلية
+                    original_text = message['text'].split('\n\n')[0]  # النص الأصلي بدون التحديثات
+                    new_text = original_text + f"\n\n🔄 تم تعديل الحالة إلى: {new_status}"
+                    edit_message_with_edit_button(chat_id, message_id, new_text, transaction_id)
+                    answer_callback_query(callback_query_id, f"تم تعديل الحالة إلى: {new_status} ✅")
+                    logger.info(f"🔄 تم تعديل حالة المعاملة {transaction_id} إلى {new_status}")
+                else:
+                    answer_callback_query(callback_query_id, "فشل في تحديث الحالة ❌")
+
     except Exception as e:
         logger.error(f"❌ خطأ في معالجة callback query: {e}")
 
